@@ -196,5 +196,3 @@ Capture shows:
 
 ---
 
-> 💡 *"The goal is not just to submit working code. The goal is to understand networking deeply enough that you could explain every packet you send."*
-> — Dr. Maggie Shammaa
