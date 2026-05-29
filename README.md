@@ -8,10 +8,10 @@
 
 | Name | Student ID |
 |------|-----------|
-| [Member 1 Full Name] | 19001366 ⭐ *(Leader)* |
-| [Member 2 Full Name] | 19008287 |
-| [Member 3 Full Name] | 19008541 |
-| [Member 4 Full Name] | 19010121 |
+| [Carlos Emad] | 19001366 ⭐ *(Leader)* |
+| [Mark Tamer] | 19008287 |
+| [Ahmed Roshedy] | 19008541 |
+| [Omar Shaker] | 19010121 |
 
 ---
 
