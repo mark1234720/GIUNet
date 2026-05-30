@@ -1,0 +1,11 @@
+{
+    "java.jdt.ls.java.home": "C:\\Users\\omars\\AppData\\Local\\Programs\\Eclipse Adoptium\\jdk-25.0.2.10-hotspot",
+    "java.configuration.runtimes": [
+        {
+            "name": "JavaSE-25",
+            "path": "C:\\Users\\omars\\AppData\\Local\\Programs\\Eclipse Adoptium\\jdk-25.0.2.10-hotspot",
+            "default": true
+        }
+    ],
+    "java.compile.nullAnalysis.mode": "disabled"
+}

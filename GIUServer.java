@@ -20,41 +20,39 @@
 // =============================================================
 
 import java.net.*;
+import java.util.Arrays;                          // FIX #1 — needed for Arrays.copyOf
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public class GIUServer {
 
     // ---------- team-specific constants ----------
-    private static final int    PORT          = 1366;
-    private static final String LEADER_ID     = "19001366";
-    private static final int    DIGIT_SUM     = 15;
+    private static final int    PORT           = 1366;
+    private static final String LEADER_ID      = "19001366";
+    private static final int    DIGIT_SUM      = 15;
     private static final String EXPECTED_HELLO = "HELLO-GIU-" + LEADER_ID + "-" + DIGIT_SUM;
     private static final String OK_REPLY       = "OK-GIU-"    + LEADER_ID + "-" + DIGIT_SUM;
 
     // ---------- protocol constants ----------
-    private static final int    TIMEOUT_MS    = 3000;   // 3-second ACK wait
-    private static final int    MAX_BUF       = 65535;
+    private static final int TIMEOUT_MS = 3000;
+    private static final int MAX_BUF    = 65535;
 
     // ---------- shared state ----------
     private static DatagramSocket socket;
     private static InetAddress    clientAddr;
     private static int            clientPort;
 
-    // seq numbers
-    private static final AtomicInteger sendSeq = new AtomicInteger(0);
-
-    // ACK signalling: receiving thread puts arrived ACK seq here
+    private static final AtomicInteger              sendSeq  = new AtomicInteger(0);
     private static final LinkedBlockingQueue<Integer> ackQueue = new LinkedBlockingQueue<>();
-
-    // graceful shutdown flag
     private static volatile boolean running = false;
+
+    // FIX #2 — single shared Scanner; creating two Scanners on System.in can lose input
+    private static final java.util.Scanner STDIN = new java.util.Scanner(System.in);
 
     // =========================================================
     // Packet helpers
     // =========================================================
 
-    /** Build a raw GIU-Net packet: [seqHigh, seqLow, payload bytes...] */
     static byte[] buildPacket(int seq, String payload) {
         byte[] payloadBytes = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] packet = new byte[2 + payloadBytes.length];
@@ -64,12 +62,10 @@ public class GIUServer {
         return packet;
     }
 
-    /** Read the 16-bit sequence number from a raw packet (big-endian, unsigned). */
     static int readSeq(byte[] packet) {
         return (Byte.toUnsignedInt(packet[0]) << 8) | Byte.toUnsignedInt(packet[1]);
     }
 
-    /** Read the payload string from a raw packet. */
     static String readPayload(byte[] packet, int length) {
         if (length <= 2) return "";
         return new String(packet, 2, length - 2, java.nio.charset.StandardCharsets.UTF_8);
@@ -98,9 +94,15 @@ public class GIUServer {
         byte[] buf = new byte[MAX_BUF];
         DatagramPacket incoming = new DatagramPacket(buf, buf.length);
 
-        System.out.println("[SERVER] Waiting for HELLO handshake on port " + PORT + "...");
+        // FIX #3 — exact line from expected output PDF
+        System.out.println("[SERVER] Waiting for connection...");
         socket.receive(incoming);
-        GIULogger.log("RECV", incoming.getData(), System.currentTimeMillis());
+
+        // FIX #1 — was: incoming.getData() (65535 bytes of garbage)
+        //           now: trimmed to actual received length
+        GIULogger.log("RECV",
+                Arrays.copyOf(incoming.getData(), incoming.getLength()),
+                System.currentTimeMillis());
 
         clientAddr = incoming.getAddress();
         clientPort = incoming.getPort();
@@ -110,7 +112,9 @@ public class GIUServer {
 
         if (EXPECTED_HELLO.equals(payload)) {
             sendPayload(0, OK_REPLY);
-            System.out.println("[SERVER] Handshake accepted. Connection established.");
+            // FIX #3 — two separate lines, matching the expected output PDF exactly
+            System.out.println("[SERVER] Handshake complete.");
+            System.out.println("[SERVER] Connection established!");
             return true;
         } else {
             sendPayload(0, "REJECTED");
@@ -120,7 +124,7 @@ public class GIUServer {
     }
 
     // =========================================================
-    // Receiver thread  –  runs continuously after handshake
+    // Receiver thread
     // =========================================================
 
     static class ReceiverThread extends Thread {
@@ -131,13 +135,16 @@ public class GIUServer {
                 try {
                     DatagramPacket dp = new DatagramPacket(buf, buf.length);
                     socket.receive(dp);
-                    GIULogger.log("RECV", dp.getData(), System.currentTimeMillis());
 
-                    int seq     = readSeq(dp.getData());
+                    // FIX #1 — trim to actual packet length before logging
+                    GIULogger.log("RECV",
+                            Arrays.copyOf(dp.getData(), dp.getLength()),
+                            System.currentTimeMillis());
+
+                    int    seq     = readSeq(dp.getData());
                     String payload = readPayload(dp.getData(), dp.getLength());
 
                     if (payload.startsWith("ACK:")) {
-                        // Put the acknowledged seq number into the queue for the sender
                         int ackedSeq = Integer.parseInt(payload.substring(4).trim());
                         ackQueue.put(ackedSeq);
 
@@ -145,9 +152,12 @@ public class GIUServer {
                         System.out.println("[Connection closed by remote.]");
                         running = false;
                         socket.close();
+                        // FIX #4 — closing System.in unblocks scanner.hasNextLine()
+                        //           in senderLoop so the main thread exits cleanly
+                        try { System.in.close(); } catch (Exception ignored) {}
 
                     } else {
-                        // DATA packet  –  print and send ACK
+                        // DATA packet
                         System.out.println("[RECEIVED] " + payload);
                         sendPayload(0, "ACK:" + seq);
                     }
@@ -160,16 +170,16 @@ public class GIUServer {
     }
 
     // =========================================================
-    // Sender logic (runs on main thread after handshake)
+    // Sender loop  (runs on main thread after handshake)
     // =========================================================
 
     static void senderLoop() {
-        java.util.Scanner scanner = new java.util.Scanner(System.in);
-        System.out.println("[SERVER] You can now chat. Type EXIT to quit.");
+        // FIX #2 — use shared STDIN, no second Scanner created here
+        // FIX #3 — startup message removed; "Connection established!" already printed above
 
         while (running) {
-            if (!scanner.hasNextLine()) break;
-            String line = scanner.nextLine().trim();
+            if (!STDIN.hasNextLine()) break;   // FIX #4 — returns false when System.in closed
+            String line = STDIN.nextLine().trim();
 
             if ("EXIT".equals(line)) {
                 try {
@@ -182,19 +192,17 @@ public class GIUServer {
                 break;
             }
 
-            int seq = sendSeq.incrementAndGet();
+            int     seq   = sendSeq.incrementAndGet();
             boolean acked = false;
 
             for (int attempt = 0; attempt < 2; attempt++) {
                 try {
                     sendPayload(seq, line);
-                    // Wait up to 3 seconds for ACK
                     Integer arrivedAck = ackQueue.poll(TIMEOUT_MS, TimeUnit.MILLISECONDS);
                     if (arrivedAck != null && arrivedAck == seq) {
                         acked = true;
                         break;
                     }
-                    // Wrong or no ACK
                     if (attempt == 0) System.out.println("[TIMEOUT] Retrying...");
 
                 } catch (Exception e) {
@@ -217,7 +225,8 @@ public class GIUServer {
 
     public static void main(String[] args) throws Exception {
         socket = new DatagramSocket(PORT);
-        System.out.println("[SERVER] GIU-Net Server started on port " + PORT);
+        // FIX #3 — exact line from expected output PDF
+        System.out.println("[SERVER] Listening on port " + PORT);
 
         if (!performHandshake()) {
             socket.close();

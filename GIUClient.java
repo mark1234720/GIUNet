@@ -23,6 +23,7 @@
 // =============================================================
 
 import java.net.*;
+import java.util.Arrays;                          // FIX #1 — needed for Arrays.copyOf
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
@@ -36,22 +37,27 @@ public class GIUClient {
     private static final String EXPECTED_OK   = "OK-GIU-"    + LEADER_ID + "-" + DIGIT_SUM;
 
     // *** SET THIS to the server machine's IPv4 address ***
-    private static final String SERVER_IP     = "192.168.137.1";
-
+    // private static final String SERVER_IP = "192.168.137.1";
+    // private static final String SERVER_IP = "197.43.179.56";
+    private static final String SERVER_IP = "127.0.0.1";
+    
     // ---------- protocol constants ----------
-    private static final int    TIMEOUT_MS    = 3000;
-    private static final int    MAX_BUF       = 65535;
+    private static final int TIMEOUT_MS = 3000;
+    private static final int MAX_BUF    = 65535;
 
     // ---------- shared state ----------
     private static DatagramSocket socket;
     private static InetAddress    serverAddr;
 
-    private static final AtomicInteger sendSeq = new AtomicInteger(0);
+    private static final AtomicInteger              sendSeq  = new AtomicInteger(0);
     private static final LinkedBlockingQueue<Integer> ackQueue = new LinkedBlockingQueue<>();
     private static volatile boolean running = false;
 
+    // FIX #2 — single shared Scanner; two Scanners on System.in can lose buffered input
+    private static final java.util.Scanner STDIN = new java.util.Scanner(System.in);
+
     // =========================================================
-    // Packet helpers  (identical to server side)
+    // Packet helpers
     // =========================================================
 
     static byte[] buildPacket(int seq, String payload) {
@@ -92,36 +98,44 @@ public class GIUClient {
     // =========================================================
 
     static boolean performHandshake() throws Exception {
-        // Socket is NOT opened until user types CONNECT
-        java.util.Scanner scanner = new java.util.Scanner(System.in);
-        System.out.println("[CLIENT] Type CONNECT to start the handshake.");
+        // FIX #3 — exact line from expected output PDF
+        System.out.println("[CLIENT] Type CONNECT to open a connection.");
 
+        // FIX #2 — use shared STDIN, not a local Scanner
         while (true) {
-            String input = scanner.nextLine().trim();
+            String input = STDIN.nextLine().trim();
             if ("CONNECT".equalsIgnoreCase(input)) break;
             System.out.println("[CLIENT] Type CONNECT to begin.");
         }
 
-        // Open the socket only now
-        socket = new DatagramSocket();
+        // Socket opened only after user types CONNECT — as required by spec
+        socket     = new DatagramSocket();
         serverAddr = InetAddress.getByName(SERVER_IP);
 
-        System.out.println("[CLIENT] Sending HELLO handshake to " + SERVER_IP + ":" + PORT);
+        // FIX #3 — "HELLO sent:" format matches expected output PDF exactly
+        System.out.println("[CLIENT] HELLO sent: " + HELLO_PAYLOAD);
         sendPayload(0, HELLO_PAYLOAD);
 
-        // Wait for OK or REJECTED
         byte[] buf = new byte[MAX_BUF];
         DatagramPacket response = new DatagramPacket(buf, buf.length);
-        socket.setSoTimeout(5000); // 5 s to receive handshake reply
+        socket.setSoTimeout(5000);   // 5 s to receive handshake reply
         socket.receive(response);
-        GIULogger.log("RECV", response.getData(), System.currentTimeMillis());
-        socket.setSoTimeout(0);    // reset to blocking
+
+        // FIX #1 — was: response.getData() (65535 bytes of garbage)
+        //           now: trimmed to actual received length
+        GIULogger.log("RECV",
+                Arrays.copyOf(response.getData(), response.getLength()),
+                System.currentTimeMillis());
+
+        socket.setSoTimeout(0);      // reset to blocking for normal chat
 
         String reply = readPayload(response.getData(), response.getLength());
         System.out.println("[CLIENT] Server replied: " + reply);
 
         if (EXPECTED_OK.equals(reply)) {
-            System.out.println("[CLIENT] Handshake successful. Connection established.");
+            // FIX #3 — two separate lines, matching the expected output PDF exactly
+            System.out.println("[CLIENT] Handshake complete.");
+            System.out.println("[CLIENT] Connected! Type messages or EXIT.");
             return true;
         } else {
             System.out.println("[CLIENT] Handshake REJECTED by server.");
@@ -142,9 +156,13 @@ public class GIUClient {
                 try {
                     DatagramPacket dp = new DatagramPacket(buf, buf.length);
                     socket.receive(dp);
-                    GIULogger.log("RECV", dp.getData(), System.currentTimeMillis());
 
-                    int seq        = readSeq(dp.getData());
+                    // FIX #1 — trim to actual packet length before logging
+                    GIULogger.log("RECV",
+                            Arrays.copyOf(dp.getData(), dp.getLength()),
+                            System.currentTimeMillis());
+
+                    int    seq     = readSeq(dp.getData());
                     String payload = readPayload(dp.getData(), dp.getLength());
 
                     if (payload.startsWith("ACK:")) {
@@ -155,6 +173,9 @@ public class GIUClient {
                         System.out.println("[Connection closed by remote.]");
                         running = false;
                         socket.close();
+                        // FIX #4 — closing System.in unblocks scanner.hasNextLine()
+                        //           in senderLoop so the main thread exits cleanly
+                        try { System.in.close(); } catch (Exception ignored) {}
 
                     } else {
                         // DATA packet
@@ -170,16 +191,16 @@ public class GIUClient {
     }
 
     // =========================================================
-    // Sender loop (main thread)
+    // Sender loop  (runs on main thread after handshake)
     // =========================================================
 
     static void senderLoop() {
-        java.util.Scanner scanner = new java.util.Scanner(System.in);
-        System.out.println("[CLIENT] You can now chat. Type EXIT to quit.");
+        // FIX #2 — use shared STDIN, no second Scanner created here
+        // FIX #3 — "Connected!" message already printed in performHandshake; removed from here
 
         while (running) {
-            if (!scanner.hasNextLine()) break;
-            String line = scanner.nextLine().trim();
+            if (!STDIN.hasNextLine()) break;   // FIX #4 — returns false when System.in closed
+            String line = STDIN.nextLine().trim();
 
             if ("EXIT".equals(line)) {
                 try {
@@ -192,7 +213,7 @@ public class GIUClient {
                 break;
             }
 
-            int seq    = sendSeq.incrementAndGet();
+            int     seq   = sendSeq.incrementAndGet();
             boolean acked = false;
 
             for (int attempt = 0; attempt < 2; attempt++) {
